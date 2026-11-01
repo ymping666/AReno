@@ -1,0 +1,72 @@
+{
+  "chunk_bytes": 524288,
+  "chunks": {
+    "chunks/u000-0000.bin": {
+      "archive": "part-000.tar.xz",
+      "bytes": 524288,
+      "sha256": "7bd5ac0a5a5ba3ff9bd960ea6952bfb71eb75df7fd20f41f2d0cb95f13998ec5"
+    },
+    "chunks/u000-0001.bin": {
+      "archive": "part-000.tar.xz",
+      "bytes": 524288,
+      "sha256": "2762e462b42b1521b99fc2cb73f363e00df45943cf106396c3d37eba329df8e4"
+    },
+    "chunks/u000-0002.bin": {
+      "archive": "part-000.tar.xz",
+      "bytes": 524288,
+      "sha256": "070d61238e2f145129e835a5d637da1dae3373c6acc45ff61938796ba58ad326"
+    },
+    "chunks/u000-0003.bin": {
+      "archive": "part-000.tar.xz",
+      "bytes": 524288,
+      "sha256": "3c97b86ecf3bcf9fab32057d5471c486e9e77753ed140ae69b9d8230b5c2ab9c"
+    },
+    "chunks/u000-0004.bin": {
+      "archive": "part-000.tar.xz",
+      "bytes": 53248,
+      "sha256": "ea6ac5adac1786195a32f2ac7ce2094a4fa0bc3656d9cc654934b7f18262396c"
+    }
+  },
+  "exclusions": [
+    "weights",
+    "optimizer tensor payloads",
+    "native binaries",
+    "TensorBoard event binaries",
+    "caches",
+    "tokenized inputs",
+    "Dolly/ablation data",
+    "credentials",
+    "full source-tree copies"
+  ],
+  "max_archive_bytes": 900000,
+  "parts": [
+    {
+      "archive": "part-000.tar.xz",
+      "bytes": 185768,
+      "members": [
+        "chunks/u000-0000.bin",
+        "chunks/u000-0001.bin",
+        "chunks/u000-0002.bin",
+        "chunks/u000-0003.bin",
+        "chunks/u000-0004.bin"
+      ],
+      "sha256": "ce4807d2c75f45e966de1a5eeb92a38d9080b778a07cd3a195a7ea3e057abacb"
+    }
+  ],
+  "schema": "areno-galore-p0-evidence-v1",
+  "units": [
+    {
+      "bytes": 2150400,
+      "chunks": [
+        "chunks/u000-0000.bin",
+        "chunks/u000-0001.bin",
+        "chunks/u000-0002.bin",
+        "chunks/u000-0003.bin",
+        "chunks/u000-0004.bin"
+      ],
+      "files": 81,
+      "name": "p0-integration",
+      "sha256": "b0d15b7a4c20561c2ea9d0a9aed99a9f351bb7aa766075fa90f91bf8f7b34173"
+    }
+  ]
+}

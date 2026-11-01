@@ -59,6 +59,8 @@ Focused correctness checks
 Run these before the complete repository suite::
 
     python -m pytest tests/test_galore_cli_cpu.py -q
+    python -m pytest tests/test_p0_training_boundaries_cpu.py \
+      tests/test_sft_cursor_resume_cpu.py -q
     python -m pytest tests/test_galore_cpu.py \
       tests/test_galore_checkpoint_policy_cpu.py \
       tests/test_recycled_galore_cpu.py tests/test_integrated_galore_cpu.py -q
@@ -92,6 +94,10 @@ user application's dataset cursor by itself.
 Which evidence supports which claim?
 ------------------------------------
 
+* :doc:`../reports/galore-p0-readiness` qualifies the standard CLI,
+  200-call save/fresh-resume across refresh200, separate public logging and
+  data-cursor state, and fork CI on runtime ``47c75ef8...``. Its tiny public
+  dataset is a user-flow test, not a learning or speed benchmark.
 * :doc:`../reports/galore-deferred-qwen3` retains historical strict-runtime
   quality and three-card performance, the separate fusion ABBA experiment,
   source identities, repairs and original failures. Historical results are

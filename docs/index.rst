@@ -34,6 +34,7 @@ AReno documentation
    4-bit AdamW <concepts/adamw-4bit>
    GaLore AdamW <concepts/galore>
    GaLore reviewer guide <concepts/galore-reviewer-guide>
+   GaLore public-entry qualification <reports/galore-p0-readiness>
    GaLore deferred Qwen3-1.7B measurements <reports/galore-deferred-qwen3>
    GaLore Qwen3-1.7B capacity boundaries <reports/galore-capacity-qwen3>
    GaLore final-source three-seed quality <reports/galore-final-quality-qwen3>
