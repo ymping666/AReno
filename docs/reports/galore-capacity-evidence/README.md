@@ -3,14 +3,21 @@
 Run from the repository root with Python 3.10 or newer:
 
 ```bash
-python docs/reports/galore-capacity-evidence/verify.py --repo . --json-output capacity-verification.json
+python docs/reports/galore-capacity-evidence/verify.py \
+  docs/reports/galore-capacity-evidence --json-output capacity-verification.json
 ```
 
 Only the Python standard library is required. No GPU, PyTorch, native extension,
 model weights, network access, installation or archive extraction is needed.
 Omit `--repo` when auditing a standalone copy; that skips comparison with the
 current checkout. An optional positional argument selects another evidence
-directory. Archived harness sources are inert `.py.txt` forensic records and
+directory. After P0 integration the current runtime differs from the measured
+`337c7612...` source, so omit `--repo` to audit these historical records. To
+check repository identity too, pass `--repo /path/to/measured-checkout` with a
+checkout of `7c4806b` or `629cf0f`. A different runtime is intentionally rejected;
+the recorded measurements do not qualify that newer source.
+
+Archived harness sources are inert `.py.txt` forensic records and
 are never imported or executed.
 
 The verifier checks lossless archive/chunk/file identities and independently

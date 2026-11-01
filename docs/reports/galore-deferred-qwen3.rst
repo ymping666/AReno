@@ -1,5 +1,5 @@
 GaLore with deferred projected-gradient lifetime on Qwen3-1.7B
-============================================================
+==============================================================
 
 This opt-in, single-GPU recipe reduces observed training allocated peak by
 30.3% relative to native 8-bit AdamW on the matched Dolly workload, at an observed

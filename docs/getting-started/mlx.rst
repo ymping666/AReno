@@ -103,7 +103,7 @@ MLX LoRA requires an unquantized text checkpoint,
 multimodal LoRA, multiple adapters, and ``reuse_actor_base`` are not supported.
 
 Ling-3.0-tiny attention LoRA (experimental)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The MLX LoRA resolver also implements Ling-3.0-tiny attention projections for
 ``model_type=bailing_hybrid`` with architecture ``BailingMoeV3ForCausalLM``.

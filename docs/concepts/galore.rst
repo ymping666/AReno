@@ -1,5 +1,5 @@
 GaLore single-GPU full-parameter training
-=======================================
+=========================================
 
 GaLore projects matrix gradients, applies AdamW in the reduced coordinates,
 and reconstructs updates to the original trainable weights. It retains FP32
@@ -32,10 +32,43 @@ Enable through the public SDK's existing optimizer dictionary::
 The initial scope is a single CUDA GPU, dense models, resident optimizer
 state, and full-parameter training. Low-bit/paged AdamW, LoRA, DP/TP, MoE,
 explicit optimizer offload, and ``keep_rollout_state=False`` are rejected.
-No additional runtime dependency is required. Existing CLI flags are unchanged.
+No additional runtime dependency is required. The standard training CLI now
+accepts GaLore options; all are opt-in. The proposed public names remain
+subject to maintainer review.
+
+Standard SFT CLI
+----------------
+
+Use the local-model, local-JSONL example in
+``examples/sft/galore/README.md`` to train, save and resume through ``areno
+train``. The core options are ``--galore-rank``,
+``--galore-update-proj-gap`` (default 200), and ``--galore-scale`` (default 1).
+Leaving rank unset retains ordinary optimizer selection.
+
+``--galore-recipe default`` retains the ordinary exact-SVD GaLore defaults.
+``--galore-recipe strict`` selects the measured recipe's recycled projector,
+compact logical FP32 masters, tile 16384, released gradients, tiled fused
+writeback and moment transport. The preset does not choose rank, learning
+rate, betas or the run budget; specify those explicitly when reproducing a
+configuration. It changes the optimization policy relative to default SVD.
+
+``--galore-deferred-projection`` separately enables projection/release during
+backward. ``--galore-fused-scale-writeback`` separately fuses rounded scaling
+into the compact writeback; it requires deferred projection, compact masters
+and tiled fused writeback. Both flags default off. The public SDK optimizer
+dictionary accepts the corresponding ``galore_deferred_projection`` and
+``galore_fused_scale_writeback`` booleans. Normal CLI/SDK configuration does
+not require experimental environment variables.
+
+The public deferred route currently supports text SFT only, restricted to
+single-GPU dense Qwen3 with eager execution,
+nonreentrant activation checkpointing and one microbatch. Set ``mini_bs`` at
+least as large as ``batch_size`` and use no extra accumulation (or one).
+Unsupported combinations raise errors; enabling the flags does not silently
+switch to a different optimizer or microbatch plan.
 
 Projection and update convention
--------------------------------
+--------------------------------
 
 For an m-by-n gradient, the right singular-vector basis is used if m >= n;
 otherwise the left singular-vector basis is used. Decomposition and updates
@@ -82,7 +115,12 @@ rounding carries. It rejects nonfinite values and unsupported conversions.
 FP32 and noncontiguous weights retain ordinary masters. Pair this option with
 ``galore_tile_rows=16384``, ``galore_release_gradients=True``, and
 ``galore_fused_writeback=True`` for bounded reconstruction and fused CUDA
-writeback. Global clipping finishes before any gradient is released.
+writeback. In the ordinary GaLore path, global clipping finishes before full
+gradient release. With deferred projection enabled, completed leaf gradients
+are projected and released during backward instead. Their norm scalars are
+retained for the ordered global reduction; model and persistent optimizer
+state remain unchanged until complete backward and global clipping. The
+clipping coefficient is then applied to retained coordinates before update.
 
 ``galore_transport_moments=True`` enables an experimental bias-corrected
 mean/diagonal-second-moment transport at refreshes. This is a separately
@@ -112,6 +150,22 @@ state raises an error when resume is requested. To save ordinary AdamW/low-bit
 state for a single-GPU control, set ``save_training_state=True`` in the optimizer
 dictionary. The application still owns its dataset cursor/order, host Python
 and NumPy RNG, and any externally managed reward/rollout state.
+
+The standard text-SFT CLI additionally saves ``sft_training_state.json``
+with its ordered normalized-dataset/loader digests, filtering/batching
+settings, epoch, next filtered batch and completed Trainer-call count.
+``--resume-from-checkpoint`` loads saved model weights, native optimizer state
+and the public logging clock, then continues from this cursor. Keep the model,
+normalized data order, loader bytes, token limits, batch/microbatch and
+accumulation settings unchanged. Mismatches or missing sidecars are rejected.
+
+``--ckpt`` remains a required base-model reference; the resume directory is
+the actual source of restored weights. ``--max-steps`` is the total completed
+Trainer-call cap, including calls before the checkpoint, rather than a new
+budget added after resume. It can be extended with enough dataset epochs.
+The current resume convenience path supports CUDA text SFT. It does not
+claim restoration of RL rollout/reward state, distributed or LoRA training.
+A direct SDK application still owns its own dataset cursor.
 
 Vocabulary-exclusion checkpoints additionally store a versioned target policy
 and the per-parameter identity mask. Restore rejects a changed policy or target
@@ -156,7 +210,9 @@ Native SFT emits ``train/logp_abs_diff_mean`` when every supplied sequence has
 complete token-aligned logprobs. For a same-model consistency diagnostic,
 obtain these with ``trainer.score_logprobs("actor", token_rows)`` immediately
 before the SFT update. Missing/mixed/incomplete lists suppress this optional
-metric. Caller-provided placeholder zeros do not establish consistency.
+metric. The standard SFT loop supplies empty old logprobs, so this optional
+consistency metric is absent. Its absence is expected; it is not a reported
+zero error. Caller-provided placeholder zeros do not establish consistency.
 The loss and its gradients are unchanged by the diagnostic. Profiled CUDA
 training time excludes this preceding score call; also report whole-iteration
 time when using it. Short local-text runs do not establish convergence or

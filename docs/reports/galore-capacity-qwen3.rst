@@ -201,7 +201,7 @@ The tensor-free archive and portable verifier are in
 repository root::
 
     python docs/reports/galore-capacity-evidence/verify.py \
-      docs/reports/galore-capacity-evidence --repo . --json-output /tmp/capacity-review.json
+      docs/reports/galore-capacity-evidence --json-output /tmp/capacity-review.json
 
 Verification reads archives without extracting or executing the original
 machine-specific harness. It checks lossless packaging and recomputes the
@@ -217,3 +217,8 @@ are recorded separately from numerical and quality conclusions.
 Final-source response-only quality is measured separately in
 :doc:`galore-final-quality-qwen3`. Those context-512/batch-4 results do not
 change the packed-input capacity boundaries or counter scopes above.
+
+After later P0 integration, audit these frozen records without ``--repo``.
+For an additional current-source match, pass ``--repo`` with a checkout of
+measured commit ``7c4806b`` or ``629cf0f``. The identity guard intentionally
+rejects a different runtime; these results are not relabeled as P0 results.

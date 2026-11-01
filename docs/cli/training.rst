@@ -405,6 +405,48 @@ in its description; flags for other algorithms are ignored.
    ``--adam-8bit``. See
    :doc:`../concepts/adamw-4bit` for complete usage examples.
 
+``--galore-rank INTEGER``
+   Enable single-GPU CUDA GaLore with this positive projection rank. Unset
+   by default, preserving ordinary optimizer selection. GaLore cannot be
+   combined with low-bit AdamW, LoRA, optimizer offload, DP/TP or dropped
+   rollout state. Ineligible tensors retain ordinary FP32-master AdamW.
+
+``--galore-update-proj-gap INTEGER``
+   Positive projection refresh interval. Default: ``200``. Refresh occurs
+   before the first parameter update and then at this completed-update gap.
+   Requires ``--galore-rank`` when changing GaLore options.
+
+``--galore-scale FLOAT``
+   Finite positive reconstructed-update scale. Default: ``1.0``.
+
+``--galore-recipe [default|strict]``
+   Default: ``default`` (ordinary exact-SVD GaLore settings). ``strict``
+   explicitly selects the recycled projector, compact logical FP32 masters,
+   tile 16384, gradient release, tiled fused writeback and moment transport.
+   It requires ``--galore-rank``. Learning rate, betas, rank and training
+   budget remain independently configured; this is an optimization-policy
+   choice, rather than a universal quality recommendation.
+
+``--galore-deferred-projection``
+   Project and release completed leaf gradients during backward, retaining
+   norm/coordinate information until the complete-backward/global-clipping
+   barrier. Disabled by default. The public route currently supports SFT
+   only: eager single-GPU dense Qwen3, one nonreentrant microbatch: ``mini-bs >= batch-size`` and
+   accumulation unset or ``1``. Compilation and active multimodal optimizer
+   groups are rejected.
+
+``--galore-fused-scale-writeback``
+   Fuse the separately rounded FP32 update scale into compact tiled
+   writeback. Disabled by default. Requires deferred projection, compact
+   masters and tiled fused writeback; ``--galore-recipe strict`` supplies
+   the latter two settings. Unsupported combinations fail explicitly.
+
+The public GaLore option names are a proposal for maintainer review. See
+:doc:`../concepts/galore` for the SDK equivalents, support boundaries and
+checkpoint policies, and ``examples/sft/galore/README.md`` for a complete
+standard SFT example. The existing private environment-based experiment
+entrypoints remain historical reproduction tools.
+
 ``--unfreeze-mm-tower``
    Train recognized vision/audio encoder tower parameters. Towers are frozen
    by default.
@@ -482,6 +524,21 @@ Checkpoint
 ``--save-interval INTEGER``
    Save checkpoint every N train steps. Default: ``100``.
 
+``--resume-from-checkpoint DIRECTORY``
+   Resume CUDA text SFT from a full saved checkpoint. The directory supplies
+   model weights, native optimizer state, public logging clock and
+   ``sft_training_state.json`` dataset cursor. ``--ckpt`` remains required as
+   the base-model reference. A weights-only directory is insufficient.
+
+   Keep normalized dataset contents/order, loader bytes, filtering/token
+   limits, batch/microbatch, accumulation and optimizer recipe compatible
+   with the saved run. Changed data/cursor settings or missing state fail
+   explicitly. ``--max-steps`` counts total Trainer calls, including those
+   completed before saving; extending it continues at the next filtered
+   batch rather than replaying the dataset prefix. Supply enough total
+   epochs for the extended cap. This convenience path does not restore
+   distributed, LoRA or online-RL rollout/reward state.
+
 Observability
 ~~~~~~~~~~~~~~
 
@@ -545,6 +602,13 @@ SFT instruction tuning
      --world-size 1 \
      --batch-size 2 \
      --mini-bs 1
+
+For opt-in GaLore, including deferred projection and rounded writeback, use
+``examples/sft/galore/README.md``. It supplies a local JSONL demonstration,
+standard training command, one checkpoint and a resumed total-step budget.
+Normal SFT does not supply old-policy logprobs; its optional native
+``train/logp_abs_diff_mean`` is absent, not artificially zero. The SDK can
+report that diagnostic when actual same-model scores are supplied.
 
 SFT loaders must normalize raw rows to ``prompt`` and ``response`` dictionaries.
 The trainer performs tokenization and trains on the response suffix.

@@ -1,5 +1,5 @@
 Selected GaLore scale1 confirmation
-==================================
+===================================
 
 This follow-up replaces the scale2 configuration as the primary quality result.
 The earlier ``galore-sft-qwen3`` report remains a historical experiment with its
@@ -15,7 +15,7 @@ omits that private experimental path. This is an optimizer configuration
 selected using development validation, not a new optimization algorithm.
 
 Model, data and training conditions
-----------------------------------
+-----------------------------------
 
 Qwen3-0.6B is pinned to ModelScope revision
 ``09b42cad3d112e832108974449ccb5e8e0f5b5d1`` and model weight SHA256

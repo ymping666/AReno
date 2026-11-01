@@ -1,5 +1,5 @@
 Final-source GaLore quality on Qwen3-1.7B
-=======================================
+=========================================
 
 The published final runtime directly completes nine fresh response-only SFT
 jobs: full AdamW, native 8-bit AdamW and strict deferred GaLore with rounded
@@ -88,7 +88,7 @@ It establishes direct final-source learning evidence, not a causal precision
 or fusion improvement over the older implementation.
 
 Memory and time during the quality jobs
---------------------------------------
+---------------------------------------
 
 .. list-table:: Same-card observations over all 4096 updates
    :header-rows: 1
@@ -147,7 +147,7 @@ and independent review. No model/checkpoint/data payload is committed. The
 portable verifier uses only the Python standard library::
 
     python -I -S docs/reports/galore-final-quality-evidence/verify.py \
-      docs/reports/galore-final-quality-evidence --repo .
+      docs/reports/galore-final-quality-evidence
     python -m pytest tests/test_galore_final_quality_evidence_cpu.py -q
 
 It checks lossless archive identities, all 36,864 update rows, native logprob,
@@ -160,3 +160,9 @@ Original host paths are informational after relocation; archived code is
 never executed. Input hashes cannot regenerate omitted token payloads, and
 this round saved no endpoint checkpoint. Historical save/resume evidence
 remains separate.
+
+Later P0 integration changes runtime identity. The command above audits the
+unchanged frozen records. To also match repository source, pass ``--repo``
+with a checkout of measured commit ``7c4806b`` or ``629cf0f``. Passing the P0
+runtime intentionally fails this guard; no historical endpoint qualifies
+that later source automatically.

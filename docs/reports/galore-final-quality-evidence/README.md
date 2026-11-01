@@ -6,9 +6,11 @@ From the repository root:
 
 ```bash
 python -I -S docs/reports/galore-final-quality-evidence/verify.py \
-  docs/reports/galore-final-quality-evidence --repo .
+  docs/reports/galore-final-quality-evidence
 python -m pytest tests/test_galore_final_quality_evidence_cpu.py -q
 ```
+
+The word "final" identifies the frozen source at the time of this study. Later P0 integration changes runtime identity. The command above audits the unchanged archived results; for a source match, additionally pass `--repo /path/to/measured-checkout` pointing to commit `7c4806b` or `629cf0f`. Passing the later P0 checkout intentionally fails the identity guard. No guard or archived record is relaxed to label old measurements as new-source results.
 
 `verify.py` uses only the standard library and the existing sibling capacity container reader. Its explicit schema differs from the capacity study; only the archive format is shared. It checks archive/chunk/file identities, all 36,864 update rows, exact paired training identities, response counts and identities, actual native consistency/lifecycle/refresh guards, source/model/data/wrapper identities and each NLL from 52,181 response logprobs. It recomputes the three-seed means, full-AdamW+2% gate and separate 8-bit comparison. `--repo` also checks all 221 runtime Python files and the public runner/helper/manifests against the measured sources. No archived harness is imported or executed. A temporary data tree is removed afterwards.
 
