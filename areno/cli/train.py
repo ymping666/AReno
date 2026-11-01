@@ -148,6 +148,12 @@ TRAIN_OPTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "adam_beta2",
             "adam_8bit",
             "adam_4bit",
+            "galore_rank",
+            "galore_update_proj_gap",
+            "galore_scale",
+            "galore_recipe",
+            "galore_deferred_projection",
+            "galore_fused_scale_writeback",
             "optimizer_state_offload",
             "optimizer_state_offload_dir",
             "optimizer_state_offload_batch_size",
@@ -181,7 +187,7 @@ TRAIN_OPTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "lam",
         ),
     ),
-    ("Checkpoint", ("save_path", "save_interval")),
+    ("Checkpoint", ("save_path", "save_interval", "resume_from_checkpoint")),
     ("Observability", ("metrics_log_dir",)),
 )
 
@@ -403,7 +409,10 @@ def _trainer_config_from_options(**options) -> TrainerConfig:
     if args.critic_warmup_steps < 0:
         raise click.UsageError("--critic-warmup-steps must be non-negative")
     _preflight_task_hooks(args, algorithm)
-    return _trainer_config_from_args(args)
+    try:
+        return _trainer_config_from_args(args)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
 
 def _require_positive_float(value: float, option_name: str) -> None:
@@ -840,6 +849,34 @@ def _function_accepts_positional_args(function: ast.FunctionDef | ast.AsyncFunct
     return required_count <= count <= positional_count
 
 
+# Explicitly selecting this CLI recipe reproduces the measured strict FP32
+# policy; deferred lifetime and scale fusion remain separate opt-in flags.
+GALORE_STRICT_RECIPE = {
+    "galore_projector_backend": "recycled",
+    "galore_compact_master": True,
+    "galore_tile_rows": 16384,
+    "galore_release_gradients": True,
+    "galore_fused_writeback": True,
+    "galore_transport_moments": True,
+}
+
+
+def _galore_options_from_args(args) -> dict:
+    options = {
+        item.name: getattr(args, item.name, item.default)
+        for item in fields(TrainerConfig)
+        if item.name.startswith("galore_")
+    }
+    recipe = getattr(args, "galore_recipe", "default")
+    if recipe not in {"default", "strict"}:
+        raise ValueError("galore_recipe must be default or strict")
+    if recipe == "strict":
+        if options["galore_rank"] is None:
+            raise ValueError("--galore-recipe strict requires --galore-rank")
+        options.update(GALORE_STRICT_RECIPE)
+    return options
+
+
 def _trainer_config_from_args(args) -> TrainerConfig:
     # Each algorithm gets the narrowest config dataclass it needs; offline
     # trainers do not receive rollout/reward/GSPO fields by construction.
@@ -866,6 +903,8 @@ def _trainer_config_from_args(args) -> TrainerConfig:
     args.multimodal_projector_lr_decay_style = getattr(args, "multimodal_projector_lr_decay_style", None)
     args.reference_mode = getattr(args, "reference_mode", "independent")
     lora = getattr(args, "lora", None)
+    galore_options = _galore_options_from_args(args)
+    resume_from_checkpoint = getattr(args, "resume_from_checkpoint", None)
     algorithm = get_algorithm(args.algo)
     chat_template_enable_thinking = False if args.disable_thinking else None
     if algorithm.name == "dpo":
@@ -902,6 +941,8 @@ def _trainer_config_from_args(args) -> TrainerConfig:
             grad_clip_norm=args.grad_clip_norm,
             adam_8bit=args.adam_8bit,
             adam_4bit=args.adam_4bit,
+            **galore_options,
+            resume_from_checkpoint=resume_from_checkpoint,
             unfreeze_multimodal_tower=args.unfreeze_multimodal_tower,
             unfreeze_multimodal_projector=args.unfreeze_multimodal_projector,
             multimodal_tower_lr=args.multimodal_tower_lr,
@@ -962,6 +1003,8 @@ def _trainer_config_from_args(args) -> TrainerConfig:
             grad_clip_norm=args.grad_clip_norm,
             adam_8bit=args.adam_8bit,
             adam_4bit=args.adam_4bit,
+            **galore_options,
+            resume_from_checkpoint=resume_from_checkpoint,
             unfreeze_multimodal_tower=args.unfreeze_multimodal_tower,
             unfreeze_multimodal_projector=args.unfreeze_multimodal_projector,
             multimodal_tower_lr=args.multimodal_tower_lr,
@@ -1030,6 +1073,8 @@ def _trainer_config_from_args(args) -> TrainerConfig:
             grad_clip_norm=args.grad_clip_norm,
             adam_8bit=args.adam_8bit,
             adam_4bit=args.adam_4bit,
+            **galore_options,
+            resume_from_checkpoint=resume_from_checkpoint,
             unfreeze_multimodal_tower=args.unfreeze_multimodal_tower,
             unfreeze_multimodal_projector=args.unfreeze_multimodal_projector,
             multimodal_tower_lr=args.multimodal_tower_lr,
@@ -1099,6 +1144,8 @@ def _trainer_config_from_args(args) -> TrainerConfig:
         grad_clip_norm=args.grad_clip_norm,
         adam_8bit=args.adam_8bit,
         adam_4bit=args.adam_4bit,
+        **galore_options,
+        resume_from_checkpoint=resume_from_checkpoint,
         unfreeze_multimodal_tower=args.unfreeze_multimodal_tower,
         unfreeze_multimodal_projector=args.unfreeze_multimodal_projector,
         multimodal_tower_lr=args.multimodal_tower_lr,
@@ -1148,7 +1195,7 @@ def run(trainer_config: TrainerConfig):
     # does not pay the cost of importing torch/areno.
     from datasets import load_dataset, load_from_disk
 
-    import areno.api
+    from areno import Trainer
     from areno.api.rewards import load_reward_fn
     from areno.api.trainer_factory import build_trainer
 
@@ -1158,9 +1205,9 @@ def run(trainer_config: TrainerConfig):
     reward_fn_path = _reward_fn_path_for_config(trainer_config)
     reward_fn = load_reward_fn(reward_fn_path) if reward_fn_path else None
 
-    api_trainer = areno.api.Trainer(
+    api_trainer = Trainer(
         trainer_config.world_size,
-        trainer_config.ckpt,
+        trainer_config.resume_from_checkpoint or trainer_config.ckpt,
         backend_type=trainer_config.backend_type(),
         metrics_log_dir=trainer_config.metrics_log_dir,
         custom_config=trainer_config.backend_config(),
@@ -1285,6 +1332,11 @@ def _training_config_settings(config: TrainerConfig) -> dict:
                 "grad_clip_norm",
                 "adam_8bit",
                 "adam_4bit",
+                "galore_rank",
+                "galore_update_proj_gap",
+                "galore_scale",
+                "galore_deferred_projection",
+                "galore_fused_scale_writeback",
             ],
         ),
         section(
@@ -1309,7 +1361,7 @@ def _training_config_settings(config: TrainerConfig) -> dict:
                 "lam",
             ],
         ),
-        section("Checkpoint", ["save_path", "save_interval"]),
+        section("Checkpoint", ["save_path", "save_interval", "resume_from_checkpoint"]),
         section("Observability", ["metrics_log_dir"]),
     ]
     extras = []
@@ -1695,6 +1747,49 @@ def _dataset_builder_for_suffix(suffix: str) -> str:
 @click.option("--min-lr", type=float, default=1.0e-7, show_default=True, help="Policy optimizer minimum learning rate.")
 @click.option("--lr-decay-steps", type=int, default=1000, show_default=True, help="Policy LR decay steps.")
 @click.option("--lr-decay-style", default="cosine", show_default=True, help="Policy LR decay style.")
+@click.option(
+    "--galore-rank",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Enable single-GPU full-parameter GaLore with this projection rank.",
+)
+@click.option(
+    "--galore-update-proj-gap",
+    type=click.IntRange(min=1),
+    default=200,
+    show_default=True,
+    help="GaLore projection refresh interval in optimizer updates.",
+)
+@click.option(
+    "--galore-scale",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Positive finite GaLore reconstructed-update scale.",
+)
+@click.option(
+    "--galore-recipe",
+    type=click.Choice(["default", "strict"]),
+    default="default",
+    show_default=True,
+    help="Strict selects the measured recycled/compact-FP32/tiled-writeback recipe; default retains ordinary SVD settings.",
+)
+@click.option(
+    "--galore-deferred-projection",
+    is_flag=True,
+    help="Project/release gradients during backward; single eager dense Qwen3 microbatch only.",
+)
+@click.option(
+    "--galore-fused-scale-writeback",
+    is_flag=True,
+    help="Fuse rounded scaling with compact writeback; requires deferred projection and --galore-recipe strict.",
+)
+@click.option(
+    "--resume-from-checkpoint",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Resume full model/optimizer/SFT cursor from this saved CUDA SFT checkpoint; --ckpt retains the base model reference.",
+)
 @click.option("--adam-beta1", type=float, default=0.9, show_default=True, help="Policy optimizer Adam beta1.")
 @click.option("--adam-beta2", type=float, default=0.999, show_default=True, help="Policy optimizer Adam beta2.")
 @click.option("--adam-8bit", is_flag=True, help="Use 8-bit Adam moment states instead of FP32 Adam states.")

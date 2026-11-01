@@ -11,7 +11,8 @@ critic warmup window.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Literal
 
 from areno.adapters.config import LoraConfig
@@ -58,6 +59,23 @@ class TrainerConfig:
     grad_clip_norm: float = 1.0
     adam_8bit: bool = False
     adam_4bit: bool = False
+    galore_rank: int | None = field(default=None, kw_only=True)
+    galore_update_proj_gap: int = field(default=200, kw_only=True)
+    galore_scale: float = field(default=1.0, kw_only=True)
+    galore_projector_backend: Literal["svd", "recycled"] = field(default="svd", kw_only=True)
+    galore_projector_oversampling: int = field(default=16, kw_only=True)
+    galore_projector_iterations: int = field(default=1, kw_only=True)
+    galore_projector_seed: int = field(default=0, kw_only=True)
+    galore_projector_final_qr: bool = field(default=True, kw_only=True)
+    galore_compact_master: bool = field(default=False, kw_only=True)
+    galore_tile_rows: int = field(default=0, kw_only=True)
+    galore_release_gradients: bool = field(default=False, kw_only=True)
+    galore_fused_writeback: bool = field(default=False, kw_only=True)
+    galore_transport_moments: bool = field(default=False, kw_only=True)
+    galore_exclude_vocab: bool = field(default=False, kw_only=True)
+    galore_deferred_projection: bool = field(default=False, kw_only=True)
+    galore_fused_scale_writeback: bool = field(default=False, kw_only=True)
+    resume_from_checkpoint: str | None = field(default=None, kw_only=True)
     unfreeze_multimodal_tower: bool = False
     unfreeze_multimodal_projector: bool = False
     multimodal_tower_lr: float | None = None
@@ -109,6 +127,12 @@ class TrainerConfig:
             raise ValueError("optimizer_state_offload_batch_size must be positive")
         if self.optimizer_state_offload != "none" and self.backend != "cuda":
             raise ValueError("optimizer_state_offload is only supported by the CUDA backend")
+        self._validate_galore()
+        if self.resume_from_checkpoint is not None:
+            if self.algo != "sft" or self.backend != "cuda":
+                raise ValueError("resume_from_checkpoint currently supports only the CUDA SFT trainer")
+            if not str(self.resume_from_checkpoint).strip() or not Path(self.resume_from_checkpoint).is_dir():
+                raise ValueError("resume_from_checkpoint must name an existing checkpoint directory")
         self._validate_multimodal_optimizer_group(
             "tower",
             self.unfreeze_multimodal_tower,
@@ -127,6 +151,43 @@ class TrainerConfig:
         )
         if self.backend == "mlx" and self.reference_mode != "independent":
             raise ValueError("MLX currently supports only reference_mode='independent'")
+
+    def _galore_options(self) -> dict:
+        return {item.name: getattr(self, item.name) for item in fields(self) if item.name.startswith("galore_")}
+
+    def _validate_galore(self) -> None:
+        options = self._galore_options()
+        for name in ("galore_deferred_projection", "galore_fused_scale_writeback"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
+        requested = any(
+            getattr(self, item.name) != item.default for item in fields(self) if item.name.startswith("galore_")
+        )
+        if not requested:
+            return
+        if self.galore_rank is None:
+            raise ValueError("GaLore options require galore_rank")
+        if (
+            self.backend != "cuda"
+            or self.tp_size != 1
+            or self.world_size != 1
+            or (self.train_devices is not None and len(self.train_devices) != 1)
+        ):
+            raise ValueError("GaLore requires single-GPU CUDA training (world_size=tp_size=1)")
+        if self.lora is not None or self.optimizer_state_offload != "none" or not self.keep_rollout_state:
+            raise ValueError("GaLore requires resident full-parameter training without LoRA or optimizer offload")
+        if self.galore_deferred_projection:
+            if self.algo != "sft" or self.agent_fn is not None:
+                raise ValueError("deferred GaLore currently supports only non-agentic SFT training")
+            if self.mini_bs < self.batch_size or self.gradient_accumulation_steps not in (None, 1):
+                raise ValueError("deferred GaLore requires one microbatch (mini_bs >= batch_size; accumulation 1)")
+            if self.unfreeze_multimodal_tower or self.unfreeze_multimodal_projector:
+                raise ValueError("deferred GaLore does not support active multimodal optimizer groups")
+        # Validate the requested CUDA optimizer through its canonical schema.
+        # Normal non-GaLore / MLX construction remains free of engine imports.
+        from areno.engine.config import OptimizerConfig
+
+        OptimizerConfig(**options, adam_8bit=self.adam_8bit, adam_4bit=self.adam_4bit)
 
     @staticmethod
     def _validate_multimodal_optimizer_group(
@@ -161,6 +222,13 @@ class TrainerConfig:
             "grad_clip_norm": self.grad_clip_norm,
             "adam_8bit": self.adam_8bit,
             "adam_4bit": self.adam_4bit,
+            **(self._galore_options() if self.galore_rank is not None else {}),
+            **({"resume_training_state": True} if self.resume_from_checkpoint is not None else {}),
+            **(
+                {"save_training_state": True}
+                if self.galore_rank is not None or self.resume_from_checkpoint is not None
+                else {}
+            ),
             "unfreeze_multimodal_tower": self.unfreeze_multimodal_tower,
             "unfreeze_multimodal_projector": self.unfreeze_multimodal_projector,
             "multimodal_tower_lr": self.multimodal_tower_lr,
@@ -219,6 +287,7 @@ class TrainerConfig:
             optimizer=self.optimizer_config(),
             runtime={
                 "activation_checkpointing": self.activation_checkpointing,
+                **({"compile_model": False} if self.galore_deferred_projection else {}),
                 "keep_rollout_state": self.keep_rollout_state,
                 "optimizer_state_offload": self.optimizer_state_offload,
                 "optimizer_state_offload_dir": self.optimizer_state_offload_dir,
@@ -269,6 +338,7 @@ class RolloutTrainerConfig(TrainerConfig):
             optimizer=self.optimizer_config(),
             runtime={
                 "activation_checkpointing": self.activation_checkpointing,
+                **({"compile_model": False} if self.galore_deferred_projection else {}),
                 "keep_rollout_state": self.keep_rollout_state,
                 "optimizer_state_offload": self.optimizer_state_offload,
                 "optimizer_state_offload_dir": self.optimizer_state_offload_dir,

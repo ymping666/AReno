@@ -15,7 +15,6 @@ the thin glue that:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -31,7 +30,7 @@ from areno.api.backend.common import (
     group_rollout_sequences,
     reduce_microbatch_metrics,
 )
-from areno.api.backend.cuda.checkpoint import save_checkpoint
+from areno.api.backend.cuda.checkpoint import load_trainer_step, save_checkpoint
 from areno.api.backend.cuda.generation import rollout_options
 from areno.api.backend.cuda.losses import dispatch_loss
 from areno.api.backend.cuda.training import (
@@ -159,6 +158,11 @@ class CudaBackend(Backend):
             raise ValueError(f"training device count must equal world_size={world_size}")
         if cfg.rollout_tp_size is not None and cfg.rollout_devices is None:
             raise ValueError("rollout_tp_size requires rollout_devices")
+        restored_trainer_step = (
+            load_trainer_step(cfg.model_path or ctx.model_path)
+            if cfg.optimizer.get("resume_training_state", False)
+            else None
+        )
         if not cfg.uses_separate_rollout_engine():
             self._train_engine = ArenoEngine.from_pretrained(
                 cfg.model_path or ctx.model_path,
@@ -175,10 +179,8 @@ class CudaBackend(Backend):
                 reference_mode=cfg.reference_mode,
                 base_model_name_or_path=cfg.base_model_name_or_path,
             )
-            if cfg.optimizer.get("resume_training_state", False):
-                metadata_path = Path(cfg.model_path or ctx.model_path) / "training_state.json"
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                ctx.global_step = int(metadata["global_step"]) - 1
+            if restored_trainer_step is not None:
+                ctx.global_step = restored_trainer_step
             return
         self._policy_sync_bucket_bytes = cfg.policy_sync_bucket_mb * 1024 * 1024
 
@@ -264,6 +266,8 @@ class CudaBackend(Backend):
             self.close()
             raise
         self._separate_rollout = True
+        if restored_trainer_step is not None:
+            ctx.global_step = restored_trainer_step
 
     def _validate_policy_plans(self) -> None:
         """Refresh live tensor views and reject any cross-rank layout mismatch."""
@@ -567,7 +571,7 @@ class CudaBackend(Backend):
 
     def save_checkpoint(self, ctx: Context, path: str) -> str:
         engine = self._require_train_engine()
-        return save_checkpoint(engine, path)
+        return save_checkpoint(engine, path, trainer_global_step=ctx.global_step if ctx is not None else None)
 
     def export_adapter(self, ctx: Context, path: str) -> str:
         del ctx

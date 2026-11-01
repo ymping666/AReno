@@ -6,8 +6,8 @@ out, then the loss optimizes next-token likelihood on target tokens.
 
 Each step follows the same backend contract as the policy-only RL trainer:
     1. Convert dataset rows into token sequences and prompt/target masks.
-    2. Build `TrainSequence` rows whose dummy logprobs/advantages only keep the
-       tensor packing path shape-compatible with RL batches.
+    2. Build `TrainSequence` rows with empty old logprobs and dummy advantages
+       for the shared tensor packing path.
     3. Hand the batch to `Trainer.train(...)`; `sft_loss_fn` ignores RL fields
        and trains on non-prompt next-token positions.
 No rollout, reward function, or weight sync is needed because SFT consumes
@@ -32,6 +32,7 @@ from areno.api.multimodal import (
     record_has_image,
 )
 from areno.api.tokenizer import configure_chat_template_enable_thinking
+from areno.api.trainers.sft_checkpoint import dataset_signature, load_cursor, save_cursor
 
 
 class SFTTrainer:
@@ -52,6 +53,13 @@ class SFTTrainer:
         self.logger = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
 
     def fit(self) -> None:
+        resume = getattr(self.config, "resume_from_checkpoint", None)
+        self._checkpoint_signature = None
+        self._resume_cursor = None
+        if resume or (self.config.save_path and getattr(self.config, "galore_rank", None) is not None):
+            self._checkpoint_signature = dataset_signature(self.config, self.dataset)
+        if resume:
+            self._resume_cursor = load_cursor(resume, self._checkpoint_signature)
         self.areno.init()
         try:
             self._fit_initialized()
@@ -63,16 +71,39 @@ class SFTTrainer:
         processor = self.areno.get_processor()
         configure_chat_template_enable_thinking(tokenizer, getattr(self.config, "chat_template_enable_thinking", None))
         configure_chat_template_enable_thinking(processor, getattr(self.config, "chat_template_enable_thinking", None))
-        step = 0
-        for epoch in range(self.config.epochs):
+        cursor = self._resume_cursor
+        step = cursor["completed_steps"] if cursor else 0
+        first_epoch = cursor["epoch"] if cursor else 0
+        if cursor:
+            epoch_batches = sum(
+                1
+                for _ in self._iter_train_batches(
+                    tokenizer,
+                    processor,
+                    max_prompt_tokens=self.config.max_prompt_tokens,
+                    max_new_tokens=self.config.max_new_tokens,
+                )
+            )
+            if cursor["next_batch"] > epoch_batches or step != first_epoch * epoch_batches + cursor["next_batch"]:
+                raise ValueError("SFT checkpoint cursor does not match the filtered dataset position")
+        if self.config.max_steps is not None and step >= self.config.max_steps:
+            return
+        for epoch in range(first_epoch, self.config.epochs):
             self.logger.info("epoch=%d stage=epoch_start", epoch)
             record_dashboard_state(self.areno, stage="epoch_start", epoch=epoch, step=step, role="policy")
-            for train_batch in self._iter_train_batches(
-                tokenizer,
-                processor,
-                max_prompt_tokens=self.config.max_prompt_tokens,
-                max_new_tokens=self.config.max_new_tokens,
+            skip_batches = cursor["next_batch"] if cursor and epoch == first_epoch else 0
+            batch_count = 0
+            for batch_index, train_batch in enumerate(
+                self._iter_train_batches(
+                    tokenizer,
+                    processor,
+                    max_prompt_tokens=self.config.max_prompt_tokens,
+                    max_new_tokens=self.config.max_new_tokens,
+                )
             ):
+                batch_count = batch_index + 1
+                if batch_index < skip_batches:
+                    continue
                 if not train_batch:
                     continue
                 self.logger.info(
@@ -95,12 +126,15 @@ class SFTTrainer:
                 self.logger.info("epoch=%d step=%d role=policy stage=train_end rows=%d", epoch, step, len(train_batch))
                 record_dashboard_state(self.areno, stage="train_end", epoch=epoch, step=step, role="policy")
                 self.logger.info("epoch=%d step=%d train_stats=%s", epoch, step, result)
+                self._next_batch = batch_index + 1
                 self._maybe_save(epoch, step)
                 step += 1
                 if self.config.max_steps is not None and step >= self.config.max_steps:
                     self.logger.info("epoch=%d step=%d stage=max_steps_reached", epoch, step)
                     record_dashboard_state(self.areno, stage="max_steps_reached", epoch=epoch, step=step, role="policy")
                     return
+            if skip_batches > batch_count:
+                raise ValueError("SFT checkpoint cursor exceeds the filtered epoch batch count")
             self.logger.info("epoch=%d stage=epoch_end", epoch)
             record_dashboard_state(self.areno, stage="epoch_end", epoch=epoch, step=step, role="policy")
 
@@ -148,6 +182,14 @@ class SFTTrainer:
         self.logger.info("epoch=%d step=%d stage=save_checkpoint_start path=%s", epoch, step, ckpt_path)
         record_dashboard_state(self.areno, stage="save_checkpoint_start", epoch=epoch, step=step, role="policy")
         saved_path = self.areno.save_checkpoint(ckpt_path)
+        if self._checkpoint_signature is not None:
+            save_cursor(
+                saved_path,
+                self._checkpoint_signature,
+                epoch=epoch,
+                next_batch=self._next_batch,
+                completed_steps=step + 1,
+            )
         self.logger.info("epoch=%d step=%d stage=save_checkpoint_end path=%s", epoch, step, saved_path)
         record_dashboard_state(self.areno, stage="save_checkpoint_end", epoch=epoch, step=step, role="policy")
 
@@ -157,8 +199,9 @@ def _record_to_train_sequence(record: Any, tokenizer, processor=None, *, max_pro
 
     `prompt_mask=True` means "do not train this source token"; the backend loss
     is next-token aligned, so the loss function later uses positions after the
-    prompt prefix. RL-only fields are filled with zeros to satisfy the shared
-    `TrainSequence` packing contract.
+    prompt prefix. Old logprobs remain empty: these dataset rows have not been
+    policy-scored and must not opt into rollout/train consistency diagnostics.
+    Dummy advantages satisfy the shared `TrainSequence` packing contract.
     """
 
     record = dict(record)
@@ -186,7 +229,6 @@ def _record_to_train_sequence(record: Any, tokenizer, processor=None, *, max_pro
         return areno.api.TrainSequence(
             prompt_mask=prompt_mask,
             tokens=tokens,
-            logprobs=zeros,
             advantages=zeros,
             features=features,
             eos_token_id=eos_token_id,
@@ -235,7 +277,6 @@ def _record_to_train_sequence(record: Any, tokenizer, processor=None, *, max_pro
             prompt_mask=prompt_mask,
             loss_mask=loss_mask,
             tokens=tokens,
-            logprobs=zeros,
             advantages=zeros,
             features=features,
             eos_token_id=int(record.get("eos_token_id", eos_token_id)),
@@ -260,11 +301,10 @@ def _record_to_train_sequence(record: Any, tokenizer, processor=None, *, max_pro
     if prompt_tokens > max_prompt_tokens or response_tokens > max_new_tokens or response_tokens == 0:
         return None
     zeros = [0.0] * len(tokens)
-    # Dummy rollout fields keep the backend packer shared with RL trainers.
+    # Empty old logprobs distinguish unscored SFT from explicit scored rows.
     return areno.api.TrainSequence(
         prompt_mask=prompt_mask,
         tokens=tokens,
-        logprobs=zeros,
         advantages=zeros,
         eos_token_id=eos_token_id,
     )

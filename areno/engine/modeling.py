@@ -121,6 +121,8 @@ def build_optimizer(params, optimizer_config, ctx, *, lr: float | None = None):
             fused_writeback=optimizer_config.galore_fused_writeback,
             transport_moments=optimizer_config.galore_transport_moments,
             exclude_vocab=optimizer_config.galore_exclude_vocab,
+            deferred_projection=optimizer_config.galore_deferred_projection,
+            fused_scale_writeback=optimizer_config.galore_fused_scale_writeback,
         )
     if optimizer_config.adam_4bit:
         optimizer_cls = AdamW4bit

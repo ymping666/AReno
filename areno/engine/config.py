@@ -54,6 +54,9 @@ class OptimizerConfig:
     galore_fused_writeback: bool = False
     galore_transport_moments: bool = False
     galore_exclude_vocab: bool = False
+    # None retains the historical private environment opt-ins; explicit booleans win.
+    galore_deferred_projection: bool | None = field(default=None, kw_only=True)
+    galore_fused_scale_writeback: bool | None = field(default=None, kw_only=True)
     resume_training_state: bool = False
     save_training_state: bool = False
     paged: bool = False
@@ -77,6 +80,18 @@ class OptimizerConfig:
                 raise ValueError("optimizer.galore_rank must be a positive integer")
             if self.adam_4bit or self.adam_8bit or self.paged:
                 raise ValueError("GaLore cannot combine with low-bit or paged AdamW")
+        for name in ("galore_deferred_projection", "galore_fused_scale_writeback"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"optimizer.{name} must be a boolean or None")
+        if self.galore_deferred_projection or self.galore_fused_scale_writeback:
+            if self.galore_rank is None:
+                raise ValueError("deferred projection and fused scale/writeback require optimizer.galore_rank")
+        if self.galore_fused_scale_writeback:
+            if not self.galore_deferred_projection or not self.galore_fused_writeback or not self.galore_compact_master:
+                raise ValueError(
+                    "fused scale/writeback requires deferred projection, compact masters and fused writeback"
+                )
         for name in (
             "projector_final_qr",
             "compact_master",
@@ -414,6 +429,11 @@ class EngineConfig:
                 raise ValueError("GaLore currently supports dense full-parameter training only")
             if self.runtime.optimizer_state_offload != "none" or not self.runtime.keep_rollout_state:
                 raise ValueError("GaLore currently requires resident optimizer state and keep_rollout_state=True")
+        if self.optimizer.galore_deferred_projection:
+            if self.model.model_type != "qwen3" or self.runtime.compile_model:
+                raise ValueError("deferred GaLore requires dense Qwen3 with compile_model=False")
+            if self.optimizer.unfreeze_multimodal_tower or self.optimizer.unfreeze_multimodal_projector:
+                raise ValueError("deferred GaLore does not support active multimodal optimizer groups")
         if (self.optimizer.resume_training_state or self.optimizer.save_training_state) and (
             self.tp_size != 1 or self.dp_size != 1 or self.lora is not None
         ):

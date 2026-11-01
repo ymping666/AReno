@@ -62,11 +62,11 @@ def archive_bytes(members, *, compressed=False):
 
 def test_real_bundle_recomputes_counts_gates_and_same_card_ranges_cpu(bundle):
     manifest, files = bundle
-    result = VERIFIER.audit_bundle(manifest, files, REPO)
+    result = VERIFIER.audit_bundle(manifest, files)
     assert result["status"] == "passed"
     assert (result["valid_cases"], result["complete_cases"], result["typed_cuda_oom_cases"]) == (69, 47, 22)
     assert (result["reused_cases"], result["step_rows"], result["monitor_samples"]) == (49, 4128, 26448)
-    assert result["current_repo_checked"] is True
+    assert result["current_repo_checked"] is False
     assert result["token_payload_replayed_offline"] is False
     assert result["primary_adamw_capacity_gate"]["passed"] is True
     assert result["stronger_8bit_capacity_gate"]["passed"] is False
@@ -89,8 +89,6 @@ def test_cli_runs_with_only_python_standard_library_cpu(tmp_path):
             "-S",
             str(EVIDENCE / "verify.py"),
             str(EVIDENCE),
-            "--repo",
-            str(REPO),
             "--json-output",
             str(output),
         ],
@@ -101,7 +99,7 @@ def test_cli_runs_with_only_python_standard_library_cpu(tmp_path):
     )
     assert process.returncode == 0, process.stderr
     result = json.loads(output.read_text())
-    assert result["status"] == "passed" and result["current_repo_checked"] is True
+    assert result["status"] == "passed" and result["current_repo_checked"] is False
     assert result["token_payload_replayed_offline"] is False
 
 
@@ -249,3 +247,17 @@ def test_duplicate_members_and_symlinks_are_rejected_cpu():
         archive.addfile(info)
     with pytest.raises(ValueError, match="nonregular or duplicate archive member"):
         VERIFIER.read_tar(stream.getvalue())
+
+
+def test_measured_runtime_identity_is_not_relabelled_cpu(bundle):
+    digest = hashlib.sha256()
+    paths = sorted((REPO / "areno").rglob("*.py"))
+    for path in paths:
+        digest.update(path.relative_to(REPO).as_posix().encode())
+        digest.update(path.read_bytes())
+    source = "337c7612282e8fc5254d890ac7659c88c2f38a8e8430d5b3cdc84f6dc96b28b8"
+    if len(paths) == 221 and digest.hexdigest() == source:
+        assert VERIFIER.audit_bundle(*bundle, repo=REPO)["current_repo_checked"] is True
+    else:
+        with pytest.raises(ValueError, match="runtime differs|runtime differs from|repository runtime differs"):
+            VERIFIER.audit_bundle(*bundle, repo=REPO)

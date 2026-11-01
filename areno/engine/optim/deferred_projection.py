@@ -1,4 +1,4 @@
-"""Private single-microbatch deferred-gradient prototype; no public API contract."""
+"""Single-microbatch deferred-gradient projection and clipping barrier."""
 
 from __future__ import annotations
 
@@ -21,11 +21,30 @@ def backend_policy(original):
 
 
 class DeferredProjectionMixin:
-    def _init_deferred_projection(self):
-        self._deferred_projection = os.getenv("ARENO_EXPERIMENT_DEFERRED_PROJECTION") == "1"
+    def _init_deferred_projection(self, deferred_projection=None, fused_scale_writeback=None):
+        for name, value in (
+            ("deferred_projection", deferred_projection),
+            ("fused_scale_writeback", fused_scale_writeback),
+        ):
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean or None")
+        self._deferred_projection = (
+            os.getenv("ARENO_EXPERIMENT_DEFERRED_PROJECTION") == "1"
+            if deferred_projection is None
+            else deferred_projection
+        )
+        if fused_scale_writeback is True and not self._deferred_projection:
+            raise ValueError("fused_scale_writeback requires deferred_projection")
+        if fused_scale_writeback is True and (not self.fused_writeback or not self.compact_master):
+            raise ValueError("fused_scale_writeback requires compact masters and fused_writeback")
+        requested_fusion = (
+            os.getenv("ARENO_EXPERIMENT_FUSED_SCALE_WRITEBACK") == "1"
+            if fused_scale_writeback is None
+            else fused_scale_writeback
+        )
         self._fused_scale_writeback = (
             self._deferred_projection
-            and os.getenv("ARENO_EXPERIMENT_FUSED_SCALE_WRITEBACK") == "1"
+            and requested_fusion
             and type(self.scale) in (bool, int, float)
             and (not isinstance(self.scale, int) or self.scale < 2**64)
         )

@@ -59,6 +59,8 @@ class GaLoreAdamW(DeferredProjectionMixin):
         fused_writeback: bool = False,
         transport_moments: bool = False,
         exclude_vocab: bool = False,
+        deferred_projection: bool | None = None,
+        fused_scale_writeback: bool | None = None,
     ):
         if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
             raise ValueError("GaLore rank must be a positive integer")
@@ -108,7 +110,7 @@ class GaLoreAdamW(DeferredProjectionMixin):
         self.rank, self.update_proj_gap, self.scale = rank, update_proj_gap, scale
         self.state: dict[torch.nn.Parameter, dict] = {}
         self.last_projection_refresh = False
-        self._init_deferred_projection()
+        self._init_deferred_projection(deferred_projection, fused_scale_writeback)
 
     def _checkpoint_backend_policy(self):
         return backend_policy(BACKEND_POLICY) if self._deferred_projection else BACKEND_POLICY.copy()

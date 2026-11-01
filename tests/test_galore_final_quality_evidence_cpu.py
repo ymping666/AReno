@@ -25,12 +25,12 @@ def bundle():
 
 
 def test_real_final_source_quality_and_raw_logprobs_cpu(bundle):
-    result = VERIFIER.audit_bundle(*bundle, repo=REPO)
+    result = VERIFIER.audit_bundle(*bundle)
     assert result["training_updates"] == 36864
     assert result["primary_quality_gate"]["passed"] is True
     assert result["raw_response_nll_recomputed"] is True
     assert result["token_payload_replayed_offline"] is False
-    assert result["current_repo_checked"] is True
+    assert result["current_repo_checked"] is False
     assert result["response_nll_comparisons"]["adam8"]["mean_relative_nll_increase"] > 0
     assert all(28 < row["memory_reduction_percent"] < 31 for row in result["same_card_training_observations"])
 
@@ -71,7 +71,7 @@ def test_corrupted_scientific_records_rejected_cpu(bundle, mutation):
     if mutation not in ("guard", "input", "capture"):
         files[name] = json.dumps(value).encode()
     with pytest.raises((AssertionError, ValueError)):
-        VERIFIER.audit_bundle(manifest, files, repo=REPO)
+        VERIFIER.audit_bundle(manifest, files)
 
 
 def test_archive_identity_rejected_cpu(bundle, tmp_path):
@@ -94,8 +94,6 @@ def test_cli_needs_only_standard_library_cpu(tmp_path):
             "-S",
             str(EVIDENCE / "verify.py"),
             str(EVIDENCE),
-            "--repo",
-            str(REPO),
             "--json-output",
             str(output),
         ],
@@ -116,3 +114,17 @@ def test_optimized_python_cannot_disable_audit_cpu():
     )
     assert process.returncode != 0
     assert "do not use -O" in process.stderr
+
+
+def test_measured_runtime_identity_is_not_relabelled_cpu(bundle):
+    digest = hashlib.sha256()
+    paths = sorted((REPO / "areno").rglob("*.py"))
+    for path in paths:
+        digest.update(path.relative_to(REPO).as_posix().encode())
+        digest.update(path.read_bytes())
+    source = "337c7612282e8fc5254d890ac7659c88c2f38a8e8430d5b3cdc84f6dc96b28b8"
+    if len(paths) == 221 and digest.hexdigest() == source:
+        assert VERIFIER.audit_bundle(*bundle, repo=REPO)["current_repo_checked"] is True
+    else:
+        with pytest.raises(ValueError, match="runtime differs|runtime differs from|repository runtime differs"):
+            VERIFIER.audit_bundle(*bundle, repo=REPO)
