@@ -35,7 +35,33 @@ finally:
 prepare_data = load_script("galore_sft_repro_prepare", "prepare_data.py")
 
 
-def test_frozen_mathematical_ast():
+def _frozen_ast_sha256(node):
+    # The immutable manifest uses Python3.12's AST representation. Earlier
+    # parsers omit this empty metadata field; add it per node without changing
+    # bodies, existing type parameters, global AST classes or frozen hashes.
+    for child in ast.walk(node):
+        if (
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and "type_params" not in child._fields
+        ):
+            child._fields += ("type_params",)
+            if not hasattr(child, "type_params"):
+                child.type_params = []
+    return hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+
+
+def _remove_type_params_metadata(node):
+    """Simulate Python3.10/3.11 AST nodes without changing their bodies."""
+    for child in ast.walk(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            child._fields = tuple(name for name in child._fields if name != "type_params")
+            if hasattr(child, "type_params"):
+                del child.type_params
+    return node
+
+
+@pytest.mark.parametrize("legacy_metadata", [False, True], ids=["native", "pre312"])
+def test_frozen_mathematical_ast(legacy_metadata):
     reference = json.loads((SCRIPTS / "frozen-ast-manifest.json").read_text())
     for filename, functions in reference.items():
         if filename.startswith("_"):
@@ -44,8 +70,52 @@ def test_frozen_mathematical_ast():
             n.name: n for n in ast.walk(ast.parse((SCRIPTS / filename).read_text())) if isinstance(n, ast.FunctionDef)
         }
         for name, expected in functions.items():
-            actual = hashlib.sha256(ast.dump(nodes[name], include_attributes=False).encode()).hexdigest()
+            node = _remove_type_params_metadata(nodes[name]) if legacy_metadata else nodes[name]
+            actual = _frozen_ast_sha256(node)
             assert actual == expected, (filename, name)
+
+
+def test_frozen_ast_normalizes_all_definition_kinds_without_global_mutation():
+    source = "async def outer(x):\n    class Box:\n        def value(self):\n            return x + 1\n    return Box\n"
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    original_fields = {kind: kind._fields for kind in kinds}
+    legacy = _remove_type_params_metadata(ast.parse(source))
+    # Captured from Python3.12 ast.dump(include_attributes=False), independently
+    # of normalization. Includes AsyncFunctionDef, ClassDef and FunctionDef.
+    assert _frozen_ast_sha256(legacy) == "7b8cfda4547712e9003d73d97ed318d1d16e756e3d630b77601401765f11b069"
+    assert {kind: kind._fields for kind in kinds} == original_fields
+
+
+def test_frozen_ast_preserves_existing_type_parameters():
+    node = ast.parse("def identity(value): return value").body[0]
+    if "type_params" not in node._fields:
+        node._fields += ("type_params",)
+    node.type_params = [ast.Name(id="T", ctx=ast.Load())]
+    expected = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+    assert _frozen_ast_sha256(node) == expected
+    assert len(node.type_params) == 1 and node.type_params[0].id == "T"
+
+
+def test_frozen_ast_rejects_changed_mathematical_body():
+    reference = json.loads((SCRIPTS / "frozen-ast-manifest.json").read_text())
+    node = next(
+        n
+        for n in ast.walk(ast.parse((SCRIPTS / "common.py").read_text()))
+        if isinstance(n, ast.FunctionDef) and n.name == "encode"
+    )
+    assert _frozen_ast_sha256(node) == reference["common.py"]["encode"]
+    # Alter response-reservation arithmetic while keeping portability metadata
+    # unchanged. A runtime version fix must not permit this scientific change.
+    division = next(
+        n
+        for n in ast.walk(node)
+        if isinstance(n, ast.BinOp)
+        and isinstance(n.op, ast.FloorDiv)
+        and isinstance(n.right, ast.Constant)
+        and n.right.value == 2
+    )
+    division.right.value = 3
+    assert _frozen_ast_sha256(_remove_type_params_metadata(node)) != reference["common.py"]["encode"]
 
 
 class Tokenizer:
