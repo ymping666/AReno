@@ -74,6 +74,7 @@ class SFTTrainer:
         cursor = self._resume_cursor
         step = cursor["completed_steps"] if cursor else 0
         first_epoch = cursor["epoch"] if cursor else 0
+        max_steps = getattr(self.config, "max_steps", None)
         if cursor:
             epoch_batches = sum(
                 1
@@ -86,7 +87,7 @@ class SFTTrainer:
             )
             if cursor["next_batch"] > epoch_batches or step != first_epoch * epoch_batches + cursor["next_batch"]:
                 raise ValueError("SFT checkpoint cursor does not match the filtered dataset position")
-        if self.config.max_steps is not None and step >= self.config.max_steps:
+        if max_steps is not None and step >= max_steps:
             return
         for epoch in range(first_epoch, self.config.epochs):
             self.logger.info("epoch=%d stage=epoch_start", epoch)
@@ -129,7 +130,7 @@ class SFTTrainer:
                 self._next_batch = batch_index + 1
                 self._maybe_save(epoch, step)
                 step += 1
-                if self.config.max_steps is not None and step >= self.config.max_steps:
+                if max_steps is not None and step >= max_steps:
                     self.logger.info("epoch=%d step=%d stage=max_steps_reached", epoch, step)
                     record_dashboard_state(self.areno, stage="max_steps_reached", epoch=epoch, step=step, role="policy")
                     return
